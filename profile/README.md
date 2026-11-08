@@ -1,12 +1,10 @@
-## Rigel
+# Rigel
 
-Rigel is building **Compass**, the open-source Agentic Software Factory.
+Rigel is a software factory for solo founders and small teams. Agents work through your issues and propose code changes. Every code change that lands is reviewed, and you choose where a person signs off.
 
-A coding agent is one pair of hands you steer turn by turn. Compass is a tree of Manager agents. Each owns a lane of work, dispatches its own workers, and opens the pull requests, so the whole board advances in parallel. You review and approve everything that ships — one engineer runs like a whole department.
-
-- **Multiplayer to the core.** Every teammate runs their own tree, and the trees meet in shared channels. Agents coordinate agent-to-agent, in the same threads the humans are in, with no one relaying between them.
-- **Open source.** Bring any provider, API, or coding plan you already pay for. No vendor lock-in, no markup.
-- Works inside the GitHub and Linear you already use.
-- Review loop, red-green tests, design-doc-first, and stacked diffs come baked in. Agentic engineering, not vibe coding.
+- **Agents keep working when you stop.** Agents keep working on assigned issues while you're away.
+- **Your team shares one set of agents.** Each workspace has shared Design, Build, and Review agent groups. Teammates can read agent work, answer questions, or guide a working agent.
+- **Keep GitHub and your tracker.** Rigel syncs your GitHub main branch and pull requests, and imports issues from GitHub or Linear.
+- **People stay in control.** You choose how approval works. Changes to secret references, spend caps, approval settings, and workspace membership always need a person.
 
 → [rigel.build](https://rigel.build)
