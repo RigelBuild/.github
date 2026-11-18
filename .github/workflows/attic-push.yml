@@ -1,0 +1,141 @@
+name: Attic push
+
+# Reusable workflow for forks. It builds flake outputs on the runner first,
+# then joins the tailnet only to push them to Attic.
+#
+# Callers must run this only on push to the default branch. A pull_request
+# run must never reach it, so fork PRs never receive the secrets.
+#
+# If a secret is empty, the check step writes a notice and every later step
+# is skipped. The job then ends green and builds nothing.
+
+on:
+  workflow_call:
+    inputs:
+      attrs:
+        description: "Flake attributes to build and push, one per line, for example .#devenv. Built for the runner's system."
+        required: true
+        type: string
+      cache:
+        description: "Attic cache name on the server."
+        required: false
+        type: string
+        default: "forks"
+      runs-on:
+        description: "Runner label for the job."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      nix-config:
+        description: "Extra nix.conf lines, for example accept-flake-config. Not secret."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        description: "Tailscale OAuth client ID that may create tag:gha-fork nodes."
+        required: false
+      TS_OAUTH_SECRET:
+        description: "Tailscale OAuth client secret."
+        required: false
+      ATTIC_PUSH_TOKEN:
+        description: "Attic token with read and write on the cache."
+        required: false
+
+permissions: {}
+
+jobs:
+  push:
+    name: Attic push
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    concurrency:
+      group: attic-push-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ATTIC_ENDPOINT: "http://nix-cache.internal.rigel.build:80"
+      ATTIC_CACHE: ${{ inputs.cache }}
+      ATTIC_ATTRS: ${{ inputs.attrs }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check push secrets
+        id: check
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          ATTIC_PUSH_TOKEN: ${{ secrets.ATTIC_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "$TS_OAUTH_CLIENT_ID" ] || missing+=(TS_OAUTH_CLIENT_ID)
+          [ -n "$TS_OAUTH_SECRET" ] || missing+=(TS_OAUTH_SECRET)
+          [ -n "$ATTIC_PUSH_TOKEN" ] || missing+=(ATTIC_PUSH_TOKEN)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice title=Attic push skipped::Secrets not set: ${missing[*]}. Nothing was built or pushed."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Nix
+        if: steps.check.outputs.ready == 'true'
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
+            ${{ inputs.nix-config }}
+
+      # Builds run before the tailnet join, so no node is up while the
+      # build runs and the build step sees no push token.
+      - name: Build outputs
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/attic-paths"
+          while IFS= read -r attr; do
+            [ -n "$attr" ] || continue
+            nix build -L --no-link --print-out-paths "$attr" >> "$RUNNER_TEMP/attic-paths"
+          done <<< "$ATTIC_ATTRS"
+          nix build --no-link --print-out-paths nixpkgs#attic-client > "$RUNNER_TEMP/attic-client-path"
+
+      - name: Join tailnet as tag:gha-fork
+        if: steps.check.outputs.ready == 'true'
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:gha-fork
+
+      - name: Write Attic client config
+        if: steps.check.outputs.ready == 'true'
+        env:
+          ATTIC_PUSH_TOKEN: ${{ secrets.ATTIC_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          config_root="$RUNNER_TEMP/attic-config"
+          mkdir -p "$config_root/attic"
+          printf '%s\n' \
+            'default-server = "nix-cache"' \
+            '' \
+            '[servers.nix-cache]' \
+            "endpoint = \"$ATTIC_ENDPOINT\"" \
+            "token = \"$ATTIC_PUSH_TOKEN\"" \
+            > "$config_root/attic/config.toml"
+          echo "XDG_CONFIG_HOME=$config_root" >> "$GITHUB_ENV"
+
+      - name: Push outputs to Attic
+        if: steps.check.outputs.ready == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mapfile -t paths < "$RUNNER_TEMP/attic-paths"
+          [ "${#paths[@]}" -gt 0 ] || { echo "No outputs to push." >&2; exit 1; }
+          attic_bin="$(cat "$RUNNER_TEMP/attic-client-path")/bin/attic"
+          "$attic_bin" push "nix-cache:$ATTIC_CACHE" "${paths[@]}"
